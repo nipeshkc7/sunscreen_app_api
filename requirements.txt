@@ -1,3 +1,8 @@
 fastapi
 uvicorn
 pillow  # for image processing
+torch
+torchvision
+opencv-python
+numpy
+pandas
