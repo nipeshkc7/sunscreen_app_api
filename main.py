@@ -100,6 +100,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 hair_removal_model = UNet().to(device)
 lesion_cropping_model = UNet().to(device)
 classification_model = models.mobilenet_v2(pretrained=True).to(device)
+for param in classification_model.parameters():
+    param.requires_grad = False
+num_features = classification_model.classifier[1].in_features
+classification_model.classifier = nn.Sequential(
+        nn.Linear(num_features, 1024),
+        nn.ReLU(inplace=True),
+        nn.Linear(1024, 512),
+        nn.ReLU(inplace=True),
+        nn.Linear(512, 1),
+        nn.Sigmoid()
+    )
 
 hair_removal_model.load_state_dict(torch.load('unet_hair_removal_updated.pth', map_location=device))
 lesion_cropping_model.load_state_dict(torch.load('unet_lesion_cropping_model.pth', map_location=device))
