@@ -6,3 +6,4 @@ torchvision
 opencv-python
 numpy
 pandas
+python-multipart
