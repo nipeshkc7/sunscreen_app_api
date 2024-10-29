@@ -14,7 +14,6 @@ from PIL import Image
 # -------------------- OpenCV Modules ---------------------
 import cv2
 
-
 # -------------------- PyTorch Modules --------------------
 import torch
 import torch.nn as nn
@@ -90,8 +89,7 @@ class UNet(nn.Module):
         dec4 = self.decoder4(dec4)
 
         out = self.final_conv(dec4)
-        return out
-
+        return self.sigmoid(out)
 
 def dilate_mask(mask, dilation_iterations=1):
     kernel = np.ones((3, 3), np.uint8)
@@ -108,7 +106,7 @@ def crop_and_resize_largest_region(original_image, predicted_mask, output_shape=
     contours, _ = cv2.findContours(predicted_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
-        return None  # Return None if no contours are found
+        return None
 
     largest_contour = max(contours, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(largest_contour)
@@ -118,40 +116,22 @@ def crop_and_resize_largest_region(original_image, predicted_mask, output_shape=
         cropped_region = (cropped_region * 255).astype(np.uint8)
 
     resized_image = cv2.resize(cropped_region, (224, 224))
-
-    # Convert to tensor and normalize to [0, 1]
     resized_tensor = torch.tensor(resized_image.transpose(2, 0, 1)).unsqueeze(0).float() / 255.0
-    return resized_tensor  # Output as PyTorch tensor in shape [1, 3, 224, 224]
+    return resized_tensor
 
-
-# Define the process_image_pipeline function
-def process_image_pipeline(input_image_path, config):
-    """
-    Processes an image by removing hair, cropping the lesion, and classifying it as benign or malignant.
-
-    Parameters:
-        input_image_path (str): Path to the input image.
-        config (dict): Configuration dictionary with model parameters.
-
-    Returns:
-        None: Displays images and prints predictions.
-    """
-
-    # Load the input image
-    input_image = Image.open(input_image_path).convert('RGB')
+def process_image_pipeline(image_bytes, config):
+    input_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
     transform = transforms.Compose([transforms.Resize((256, 256)), transforms.ToTensor()])
     image_tensor = transform(input_image).unsqueeze(0).to(config["device"])
     input_image_np = image_tensor.squeeze(0).cpu().numpy().transpose(1, 2, 0)
 
-    # Load hair removal and lesion cropping models
     hair_removal_model = UNet().to(config["device"])
     lesion_cropping_model = UNet().to(config["device"])
-    hair_removal_model.load_state_dict(torch.load('unet_hair_removal_updated.pth'))
-    lesion_cropping_model.load_state_dict(torch.load('unet_lesion_cropping_model.pth'))
+    hair_removal_model.load_state_dict(torch.load('unet_hair_removal_updated.pth', map_location=config["device"]))
+    lesion_cropping_model.load_state_dict(torch.load('unet_lesion_cropping_model.pth', map_location=config["device"]))
     hair_removal_model.eval()
     lesion_cropping_model.eval()
 
-    # Hair removal
     with torch.no_grad():
         hair_output = hair_removal_model(image_tensor)
         hair_mask = (torch.sigmoid(hair_output) > 0.5).float()
@@ -159,25 +139,21 @@ def process_image_pipeline(input_image_path, config):
     inpainted_image_np = inpaint_white_regions(input_image_np, mask_np, inpaint_radius=5)
     inpainted_image_tensor = torch.tensor(inpainted_image_np.transpose(2, 0, 1)).unsqueeze(0).to(config["device"])
 
-    # Lesion cropping
     with torch.no_grad():
         lesion_output = lesion_cropping_model(inpainted_image_tensor)
         lesion_mask = (torch.sigmoid(lesion_output) > 0.5).float()
     lesion_mask_np = lesion_mask.squeeze(0).squeeze(0).cpu().numpy().astype(np.uint8)
     cropped_img_np = crop_and_resize_largest_region(inpainted_image_np, lesion_mask_np)
 
-    # Convert cropped image to tensor for prediction
     preprocess = transforms.Compose([
         transforms.Resize((config["img_size"], config["img_size"])),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     cropped_img_np = cropped_img_np.squeeze(0).permute(1, 2, 0).cpu().numpy()
-
     cropped_image_tensor = preprocess(Image.fromarray((cropped_img_np * 255).astype(np.uint8)))
     input_batch = cropped_image_tensor.unsqueeze(0).to(config["device"])
 
-    # Load classification model
     model = models.mobilenet_v2(pretrained=True)
     for param in model.parameters():
         param.requires_grad = False
@@ -194,38 +170,27 @@ def process_image_pipeline(input_image_path, config):
     model = model.to(config["device"])
     model.eval()
 
-    # Classification prediction
     with torch.no_grad():
         output = model(input_batch)
         pred = output.item()
         pred_label = "Malignant" if pred >= 0.5 else "Benign"
 
-    return pred_label
+    return pred_label, pred
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     image_bytes = await file.read()
     conf = {
-    "seed": 42,
-    "epochs": 50,
-    "early_stopping": 10,
-    "img_size": 224,
-    "dataset_path": r"C:\path\to\data",
-    "metadata_path": r"C:\path\to\metadata",
-    "batch_size": 50,
-    "learning_rate": 1e-4,
-    "min_lr": 1e-6,
-    "weight_decay": 1e-6,
-    "loss_function": nn.BCEWithLogitsLoss,
-    "optimizer": optim.Adam,
-    "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau,
-    "scheduler_factor": 0.1,
-    "scheduler_patience": 3,
-    "batch_print_interval": 200,
-    "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        "seed": 42,
+        "epochs": 50,
+        "early_stopping": 10,
+        "img_size": 224,
+        "dataset_path": r"C:\path\to\data",
+        "metadata_path": r"C:\path\to\metadata",
+        "batch_size": 50,
+        "learning_rate": 0.0001,
+        "weight_decay": 0.0001,
+        "device": "cpu" if not torch.cuda.is_available() else "cuda",
     }
-
-    prediction_val = process_image_pipeline(image_bytes, conf)
-
-
-    return {"prediction": prediction_val}
+    prediction, probability = process_image_pipeline(image_bytes, conf)
+    return {"prediction": prediction, "probability": probability}
