@@ -1,0 +1,3 @@
+fastapi
+uvicorn
+pillow  # for image processing
